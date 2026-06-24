@@ -1,7 +1,6 @@
 # Backend Dockerfile — Express + better-sqlite3 + Python (for ingest/trigger).
 # Multi-stage keeps the image small. Uses Debian so better-sqlite3's native
 # build and python both install cleanly.
-
 FROM node:20-bookworm-slim AS build
 WORKDIR /app
 # Python is required because /ingest/trigger spawns the scraper.
@@ -24,8 +23,6 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app ./
 COPY --from=build /scraper/.venv /scraper/.venv
 COPY scraper/ /scraper/
-
-ENV DATABASE_URL
 ENV PYTHON_BIN=/scraper/.venv/bin/python
 ENV PORT=4000
 EXPOSE 4000
