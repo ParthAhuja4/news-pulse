@@ -1,0 +1,32 @@
+services:
+  - type: web
+    name: news-pulse-backend
+    runtime: node
+    plan: free
+    region: oregon
+    rootDir: backend
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: PORT
+        value: 10000
+      - key: DATABASE_URL
+        value: ./data/news.db
+      - key: PYTHON_BIN
+        sync: false # set in dashboard to your Render python path if needed
+
+  - type: worker
+    name: news-pulse-scraper
+    runtime: python
+    plan: free
+    region: oregon
+    rootDir: scraper
+    buildCommand: pip install -r requirements.txt
+    # Render free "cron" is the better fit; see DEPLOY.md for the cron variant.
+    startCommand: python -c "import time; print('scraper ready'); import pipeline"
+    envVars:
+      - key: DB_PATH
+        # IMPORTANT: point this at the SAME file the backend uses. On Render's
+        # ephemeral disk you'll need a shared persistent disk (see DEPLOY.md).
+        value: ./data/news.db
