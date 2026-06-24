@@ -3,9 +3,5 @@
   "version": 2,
   "buildCommand": "npm run build",
   "outputDirectory": ".next",
-  "framework": "nextjs",
-  "regions": ["sfo1"],
-  "env": {
-    "NEXT_PUBLIC_API_URL": "@news_pulse_api_url"
-  }
+  "framework": "nextjs"
 }
