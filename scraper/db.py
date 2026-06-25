@@ -44,14 +44,16 @@ def _database_url() -> str:
 def connect() -> "psycopg2.extensions.connection":
     """Open a Postgres connection.
 
-    ``sslmode`` defaults to ``require`` (mandatory on Neon/supabase). Override
-    locally with ``PGSSLMODE=disable`` if you run a local, non-TLS Postgres.
+    TLS is controlled by the ``sslmode`` query param on ``DATABASE_URL`` itself
+    (Neon's pooled string ships ``?sslmode=require``, which is mandatory on
+    Neon/Supabase). For a local non-TLS Postgres, append ``?sslmode=disable`` to
+    your ``DATABASE_URL`` — unlike the Node backend, psycopg2 here does not read
+    a separate ``PGSSLMODE`` env var.
     """
     conn = psycopg2.connect(_database_url(), cursor_factory=RealDictCursor)
     # Explicit transaction control: ingest inserts are small and the one big
     # write (replace_clusters) manages its own commit.
     conn.autocommit = False
-    # Allow per-query sslmode override via env without rewriting the URL.
     return conn
 
 

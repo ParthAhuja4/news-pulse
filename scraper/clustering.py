@@ -7,24 +7,27 @@ The algorithm is deliberately simple and explainable (a stated project goal in
 PROJECT.md), not a sophisticated NLP pipeline:
 
 1. Tokenize title + summary for each article: lowercase, strip HTML/URLs, strip
-   a small English stopword + domain-name list, drop tokens < 4 chars.
-2. Compute smoothed IDF for every token across the corpus.
-3. Build a pairwise IDF-weight similarity score between every article pair that
-   shares at least one surviving token.
-4. Convert similarity to distance and run DBSCAN: core points need ≥
-   DBSCAN_MIN_SAMPLES neighbours within DBSCAN_EPS distance. This breaks the
-   single-linkage chaining that made union-find merge loosely-related stories —
-   bridging articles that weakly connect two topics become noise and are dropped.
+   a small English stopword + domain-name list, drop tokens shorter than 5 chars.
+2. Compute smoothed IDF for every surviving token across the corpus.
+3. Build a pairwise IDF-weighted similarity score for every article pair that
+   shares at least one surviving token (inverted-index enumeration).
+4. Convert similarity to distance (d = 1/(1+S)) and run DBSCAN. Two articles
+   count as neighbours only when they share ≥ MIN_SHARED_TOKENS surviving tokens
+   AND sit within DBSCAN_EPS distance; a core point needs ≥ DBSCAN_MIN_SAMPLES
+   such neighbours. Because membership is density-based, a bridging article that
+   only weakly links two topics is labelled noise and dropped instead of chaining
+   the two topics together.
 5. Each DBSCAN cluster (label ≥ 0) becomes one output cluster. Noise points
    (label -1) are singletons, already filtered by min_cluster_size. Label = 3
    most frequent tokens across all member articles, joined by " / ".
 
 For small corpora (< MIN_CORPUS articles), steps 2–4 are skipped and we fall
-back to a raw shared-count threshold + union-find (CLUSTER_THRESHOLD). IDF
+back to a raw shared-token-count threshold + union-find (CLUSTER_THRESHOLD). IDF
 weighting solves the degenerate-mega-cluster problem that plain overlap suffers
 on news: generic words like "world"/"country"/"against" appear in ~10% of any
 news feed and glue unrelated stories together; IDF down-weights them so only
-story-specific co-occurrences carry the link.
+story-specific co-occurrences carry the link. DBSCAN additionally rejects the
+transitive chaining that union-find cannot avoid (A~B and B~C → A/B/C merge).
 
 We rebuild from scratch every run (see ``db.replace_clusters``).
 """
@@ -44,20 +47,19 @@ MIN_SHARED_TOKENS = 3
 # DF-pruning and IDF linking thresholds (see cluster_articles docstring).
 MIN_CORPUS = 30
 
-# Hard ceiling: tokens in more than MAX_DF_FRAC of articles are excluded from
-# IDF. On a 90-article corpus, 0.05 → df > 4.5, which only prunes ~50 of 2030
-# tokens — far too few. 0.02 → df > 1.8, which keeps only hapax legomena
-# (unique to one article) and words shared by exactly one other. This is strict
-# but appropriate: we want cluster links to be driven by distinctive story
-# vocabulary (ebola, counteroffensive, heatwave, maternity), not by the garden-
-# variety words that fill every news summary.
+# Hard ceiling: tokens appearing in more than MAX_DF_FRAC of articles are
+# excluded from the IDF vocabulary. 0.08 means roughly the top ~8% of articles
+# by document frequency are pruned, removing the generic news-vocabulary tail
+# ("world", "country", "police", ...) that would otherwise chain unrelated
+# stories together. Surviving tokens are the distinctive, story-specific words
+# (ebola, counteroffensive, heatwave, maternity) that drive genuine topical
+# links.
 MAX_DF_FRAC = 0.08
 
-# Minimum cumulative IDF weight to link two articles. With MAX_DF_FRAC=0.02,
-# surviving tokens have IDF ≥ 4.0 (df=2) up to ~4.8 (df=1). LINK_WEIGHT=3.5
-# means any single shared surviving token is enough to link — but the hard
-# max_df pruning already removed the generic tail, so a "shared surviving
-# token" genuinely indicates a topical overlap.
+# Minimum cumulative IDF weight to create an edge between two articles. In the
+# DBSCAN path this only gates *whether an edge is considered at all* — the
+# density check (DBSCAN_EPS + DBSCAN_MIN_SAMPLES) is what actually decides
+# cluster membership. Kept for parity with the link-construction step.
 LINK_WEIGHT = 3.5
 
 # DBSCAN parameters (large-corpus path only).
@@ -67,12 +69,14 @@ LINK_WEIGHT = 3.5
 # shared surviving tokens have S=0 → d=1.0 (maximum distance).  A pair that
 # shares one token of IDF≈4.5 has S≈4.5 → d≈0.18.
 #
-# DBSCAN_EPS: neighbourhood radius.  0.25 corresponds to S≥3 (≈ one strong
-# shared rare token), which is a tighter gate than LINK_WEIGHT alone and
-# prevents the single-linkage chaining that inflated cluster counts.
+# DBSCAN_EPS: neighbourhood radius. 0.05 corresponds to a high similarity
+# (S ≥ 19), i.e. the two articles must share several rare tokens whose combined
+# IDF weight is large. This is intentionally tight: it keeps clusters to
+# genuinely-coherent stories and prevents the single-linkage-style chaining that
+# inflated cluster counts under the old union-find path.
 #
 # DBSCAN_MIN_SAMPLES: an article must have at least this many neighbours
-# within EPS to be a core point.  2 means a genuine pair is enough; raising
+# within EPS to be a core point. 2 means a genuine pair is enough; raising
 # it to 3 would require a mini-cluster of 3 mutually-close articles before
 # any of them is considered a core point, producing fewer but denser clusters.
 DBSCAN_EPS = 0.05
@@ -346,8 +350,8 @@ def _dbscan(
         d(i, j) = 1 / (1 + S)   where S = pair_weight[(i,j)] (or 0 if absent)
 
     This maps S=0 (no shared tokens) → d=1.0 and S→∞ → d→0.  Articles are
-    neighbours if d ≤ eps AND pair_shared ≥ MIN_SHARED_TOKENS (same guard as
-    the old union-find path, preventing single-coincidental-word links).
+    neighbours if d ≤ eps AND pair_shared ≥ MIN_SHARED_TOKENS, so a single
+    coincidental shared rare word cannot create a link on its own.
 
     Returns a label list of length n.  Noise points get label -1; cluster
     labels are non-negative integers.
@@ -407,8 +411,9 @@ def cluster_articles(
       4. Each DBSCAN label ≥ 0 is one output cluster; noise (label -1) becomes
          singletons filtered out by min_cluster_size.
 
-    Small corpus (< MIN_CORPUS): IDF is unreliable, so we fall back to raw
-    shared-token-count threshold + union-find (unchanged from original).
+    Small corpus (< MIN_CORPUS): IDF is unreliable on tiny corpora, so we fall
+    back to a raw shared-token-count threshold (CLUSTER_THRESHOLD) plus
+    union-find to derive connected components.
 
     The return shape is identical to the original implementation:
         [{"cluster_id", "label", "size", "article_ids", "articles"}, ...]
