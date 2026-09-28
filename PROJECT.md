@@ -177,15 +177,19 @@ largely unmaintained, Python 3.12+ compatibility is shaky.
 
 ---
 
-## 7. Charting library: recharts
+## 7. Charting: plain HTML bars, no chart library
 
-**Choice:** recharts.
+**Choice:** the topic list is rendered as HTML buttons with CSS bars. An earlier
+version used a recharts bar chart.
 
-**Gained.** Declarative React components, built-in responsive container,
-tooltips, click handlers — the whole timeline is ~80 lines.
+**Gained.** Every topic is a real button, so it works by keyboard, touch and
+screen reader. Labels wrap at any width, so the same list works from a 320px
+phone to a wide desktop. Bars use the same theme tokens as the rest of the UI,
+and the bundle no longer carries a chart library.
 
-**Gave up.** recharts is not designed for **true Gantt-style time-span bars**. We
-encoded magnitude as bar **height/color** and ordered clusters by start time.
+**Gave up.** No axes or hover tooltips, and still no **true Gantt-style
+time-span bars**: magnitude is bar **length**, and each row shows its date range
+as text.
 
 ---
 

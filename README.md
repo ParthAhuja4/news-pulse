@@ -13,8 +13,8 @@ the articles in the one you pick.
 News Pulse watches three news RSS feeds (BBC, NPR, The Guardian World), pulls each
 article's full body, stores the lot in a single Postgres database, and groups
 articles that are about the same story into **clusters**. The web UI shows those
-clusters on a timeline (bar height = article count, ordered by start time) and
-lists the articles in any cluster you click. A **Refresh data** button kicks off a
+clusters as a ranked list of topics (bar length = article count) and lists the
+articles in any topic you select. A **Refresh data** button kicks off a
 fresh scrape+cluster run on demand; the backend reports progress via a job-status
 poll, and the timeline repopulates when the run finishes.
 
@@ -54,7 +54,7 @@ flowchart LR
     RSS[RSS feeds<br/>BBC / NPR / Guardian] --> S[scraper<br/>Python pipeline.py]
     S -->|psycopg2 write| DB[(Postgres<br/>Neon)]
     DB -->|pg Pool read| BE[backend<br/>Express API]
-    BE -->|JSON over HTTP| FE[frontend<br/>Next.js + recharts]
+    BE -->|JSON over HTTP| FE[frontend<br/>Next.js + Tailwind]
     FE -->|POST /ingest/trigger| BE
     BE -->|spawn pipeline.py| S
 ```
@@ -83,9 +83,9 @@ flowchart LR
 | ------------- | ----------------------- | ------------------------------------------------------------------------- |
 | Scraper       | Python 3.10+            | feedparser, trafilatura, beautifulsoup4, python-dateutil, psycopg2-binary |
 | Backend API   | Node.js 18+             | Express 4, node-postgres (`pg`) 8, cors, dotenv                           |
-| Frontend      | JavaScript (Next.js 14) | React 18, recharts 2, Tailwind CSS 3                                      |
+| Frontend      | JavaScript (Next.js 14) | React 18, Tailwind CSS 3, lucide-react                                    |
 | Database      | —                       | PostgreSQL, hosted on Neon (PgBouncer pooled endpoint)                    |
-| Backend host  | —                       | Render (Node web service) / Docker                                        |
+| Backend host  | —                       | Render (Docker web service)                                               |
 | Frontend host | —                       | Vercel (Next.js)                                                          |
 
 ---
@@ -127,7 +127,7 @@ npm run dev                    # http://localhost:3000
 ```
 
 Open http://localhost:3000, click **Refresh data** to trigger an ingest, and the
-timeline repopulates when the scraper finishes. (For local non-TLS Postgres, set
+topic list repopulates when the scraper finishes. (For local non-TLS Postgres, set
 `PGSSLMODE=disable`.)
 
 ### Environment variables
@@ -135,7 +135,7 @@ timeline repopulates when the scraper finishes. (For local non-TLS Postgres, set
 | Variable              | Where           | Default                 | Purpose                                              |
 | --------------------- | --------------- | ----------------------- | ---------------------------------------------------- |
 | `DATABASE_URL`        | root `.env`     | _(required)_            | Neon pooled Postgres connection string               |
-| `PORT`                | backend         | `4000`                  | Backend listen port (`10000` on Render)              |
+| `PORT`                | backend         | `4000`                  | Backend listen port                                  |
 | `NEXT_PUBLIC_API_URL` | frontend `.env` | `http://localhost:4000` | Browser-visible backend base URL                     |
 | `CLUSTER_THRESHOLD`   | scraper         | `3`                     | Min shared significant words (small-corpus fallback) |
 | `PGSSLMODE`           | both            | `require`               | `disable` for local non-TLS Postgres                 |
@@ -191,6 +191,9 @@ news/
 ├── db/
 │   └── schema.sql            # shared Postgres DDL (applied by both services at boot)
 ├── .env.example              # shared env (DATABASE_URL, PORT, NEXT_PUBLIC_API_URL, …)
+├── render.yaml               # Render blueprint (backend as a Docker web service)
+├── .dockerignore             # keeps the image build context to backend/scraper/db
+├── .github/workflows/deploy-render.yml  # triggers a Render deploy on push to main
 ├── README.md                 # this file
 ├── PROJECT.md                # engineering tradeoffs for technical reviewers
 ├── DEPLOY.md                 # step-by-step deploy guide (Neon + Render + Vercel)
@@ -207,14 +210,19 @@ news/
 │   ├── db.js                 # pg Pool + idempotent schema init
 │   ├── jobs.js               # in-memory ingest job runner (spawns pipeline.py)
 │   ├── package.json
-│   ├── render.yaml           # Render blueprint (backend web + scraper worker)
 │   └── Dockerfile            # container build bundling Node + Python + scraper
-└── frontend/                 # Next.js App Router + Tailwind + recharts
-    ├── app/page.jsx          # main page (timeline + panel + source filter + refresh)
+└── frontend/                 # Next.js App Router + Tailwind
+    ├── app/page.jsx          # main page: state, data loading, refresh, layout
     ├── app/api.js            # fetch wrapper (NEXT_PUBLIC_API_URL, error parsing)
-    ├── app/layout.js         # root layout + metadata
-    ├── components/Timeline.jsx    # recharts bar chart, click → select cluster
-    ├── components/ClusterPanel.jsx# right-hand detail list with source filter
+    ├── app/layout.js         # root layout, fonts, theme script, metadata
+    ├── app/globals.css       # light/dark theme tokens
+    ├── components/AppHeader.jsx    # sticky header: title, theme toggle, refresh
+    ├── components/StatTiles.jsx    # topic / article / source counts
+    ├── components/ClusterBars.jsx  # ranked topic list with bars, select → articles
+    ├── components/ClusterPanel.jsx # article list for the selected topic
+    ├── components/ClusterSheet.jsx # bottom sheet holding the panel on phones/tablets
+    ├── components/SourceFilter.jsx # source chips for the article list
+    ├── lib/                  # useCluster, useMediaQuery, date formatting
     ├── vercel.json           # Vercel config (framework=nextjs)
     └── package.json
 ```
@@ -284,7 +292,7 @@ A condensed view; the full write-up is `PROJECT.md`. For each choice: **picked**
 | **Scheduling**               | None (manual trigger / direct run)                                                      | Render Cron Job hourly                            | Kept scope minimal for the assessment                                                                                             | Clusters only refresh when someone triggers a run                                                                  |
 | **Backend framework**        | Express 4                                                                               | Fastify / Next.js route handlers                  | Minimal, ubiquitous, simple async handlers                                                                                        | None material for this size                                                                                        |
 | **Frontend framework**       | Next.js 14 (App Router)                                                                 | CRA / Vite + React                                | File-based routing, Vercel-native deploy                                                                                          | Slightly more machinery than a SPA needs                                                                           |
-| **Charting**                 | recharts 2                                                                              | visx / D3 / ECharts                               | Declarative React components, responsive container, click handlers — timeline is ~80 lines                                        | No true Gantt-style span bars; we encode magnitude as bar height/colour                                            |
+| **Charting**                 | Plain HTML/CSS bars (no chart library)                                                  | recharts / visx / D3                              | Each topic is a real button: keyboard and touch friendly, labels wrap at any width, themed by the same CSS tokens                 | No axes or tooltips; no true Gantt-style span bars                                                                 |
 | **Styling**                  | Tailwind CSS 3                                                                          | CSS Modules / styled-components                   | Utility-first, no context switching, tiny CSS                                                                                     | Class strings get long                                                                                             |
 | **CORS**                     | `app.use(cors())` (permissive)                                                          | Restrictive origin allowlist                      | Vercel + Render cross-origin "just works" out of the box                                                                          | Open to any origin (single-user tool)                                                                              |
 | **Schema ownership**         | `db/schema.sql`, applied by both services at boot                                       | Scraper owns DDL; backend duplicates inline       | Single source of truth; no drift                                                                                                  | Both services must be able to read the file at boot                                                                |
@@ -321,11 +329,9 @@ KEY`; `TEXT` retained (Postgres `TEXT` is unbounded, same semantics); uniqueness
   drivers, overridable to `disable` via `PGSSLMODE` for local non-TLS Postgres.
 - **Backend became async**: `pg` returns Promises, so every route handler is now
   `async` — a small but touch-every-endpoint change.
-- **Residual stale config**: `backend/render.yaml` still hardcodes
-  `DATABASE_URL: ./data/news.db` and `DB_PATH: ./data/news.db` and references a
-  persistent-disk model — leftovers from the SQLite era that do **not** reflect the
-  current Postgres behaviour and would need correcting before a Render Blueprint
-  deploy (use DEPLOY.md's manual steps instead).
+- **Render blueprint**: the SQLite-era `backend/render.yaml` was replaced by a
+  root `render.yaml` that describes the backend as a Docker web service reading
+  `DATABASE_URL` from the dashboard.
 
 ---
 
@@ -336,8 +342,8 @@ Based on the actual config files:
 | Component | Host                                        | Why (from config)                                                                                                                                                                                                                             |
 | --------- | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Frontend  | **Vercel**                                  | `frontend/vercel.json` declares `framework: nextjs`, `buildCommand: npm run build`, `outputDirectory: .next`. Next.js is Vercel-native.                                                                                                       |
-| Backend   | **Render** (Node web service) **or** Docker | `backend/render.yaml` defines a Node web service (`news-pulse-backend`, `runtime: node`, `healthCheckPath: /healthz`, `npm install` / `npm start`). `backend/Dockerfile` bundles Node 20 + Python + scraper deps for an all-in-one container. |
-| Scraper   | **Render worker** (or spawned by backend)   | `render.yaml` defines a Python `worker` service; alternatively `POST /ingest/trigger` spawns `pipeline.py` in-process. No scheduled cron is implemented.                                                                                      |
+| Backend   | **Render** (Docker web service) | Root `render.yaml` defines a Docker web service (`news-pulse-backend`, `dockerfilePath: ./backend/Dockerfile`, build context = repo root, `healthCheckPath: /healthz`). `backend/Dockerfile` bundles Node 20 + Python + scraper deps. Deploys are triggered on push to `main` by `.github/workflows/deploy-render.yml` through a Render deploy hook. |
+| Scraper   | **Inside the backend container** | `POST /ingest/trigger` spawns `pipeline.py` as a child process of the backend. No separate service and no scheduled cron. |
 | Database  | **Neon** (Postgres)                         | Both services connect via the shared `DATABASE_URL` (Neon pooled `-pooler` endpoint); no on-host DB file.                                                                                                                                     |
 
 **Secrets/env vars** are managed per-platform (Render/Vercel dashboards) and never
@@ -364,11 +370,8 @@ Evident from code/`PROJECT.md`, not invented:
   single-process only; two rapid triggers run two scrapers (`PROJECT.md §5`).
 - **No semantic clustering** — synonyms/paraphrases won't link; only exact token
   overlap does.
-- **Stale UI footer text**: `frontend/app/page.jsx` still reads _"keyword-overlap
-  union-find clustering (threshold = 3)"_, which describes the small-corpus path
-  only; the large-corpus path is DBSCAN. Cosmetic, but inaccurate.
-- **Stale `render.yaml`** values (`./data/news.db`) from the SQLite era — see
-  Migration Notes.
+- **Source filter is per topic**: it filters the article list of the selected
+  topic; topic sizes in the list always count every source.
 - **Permissive CORS** (`app.use(cors())`) — acceptable for a single-user tool, not
   for production multi-tenant use.
 
