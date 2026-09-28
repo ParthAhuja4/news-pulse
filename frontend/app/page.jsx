@@ -2,18 +2,32 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { apiGet, apiPost } from "./api";
-import Timeline from "../components/Timeline";
+import AppHeader from "../components/AppHeader";
+import ClusterBars from "../components/ClusterBars";
 import ClusterPanel from "../components/ClusterPanel";
+import ClusterSheet from "../components/ClusterSheet";
+import ErrorNotice from "../components/ErrorNotice";
+import StatTiles from "../components/StatTiles";
+import useCluster from "../lib/useCluster";
+import useMediaQuery from "../lib/useMediaQuery";
+import { formatRelative } from "../lib/format";
+
+const POLL_INTERVAL_MS = 2000;
+const POLL_TIMEOUT_MS = 5 * 60 * 1000;
 
 export default function Page() {
   const [timeline, setTimeline] = useState([]);
   const [sources, setSources] = useState([]); // [{name, checked}]
   const [selectedId, setSelectedId] = useState(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [jobStatus, setJobStatus] = useState("");
   const [error, setError] = useState("");
   const pollTimer = useRef(null);
+  const statusTimer = useRef(null);
+
+  const isDesktop = useMediaQuery("(min-width: 1024px)");
+  const clusterState = useCluster(selectedId);
 
   const loadTimeline = useCallback(async () => {
     setLoading(true);
@@ -24,6 +38,9 @@ export default function Page() {
         apiGet("/sources").catch(() => []),
       ]);
       setTimeline(tl);
+      // Cluster ids are reissued on every ingest run, so a selection from
+      // before the reload may point at nothing, or at a different topic.
+      setSelectedId((id) => (tl.some((c) => c.id === id) ? id : null));
       setSources((prev) => {
         // Preserve existing checked state where possible; default new ones on.
         return srcs.map((name) => {
@@ -43,14 +60,24 @@ export default function Page() {
   }, [loadTimeline]);
 
   // ---- Source filter -------------------------------------------------------
-  const activeSources = new Set(
-    sources.filter((s) => s.checked).map((s) => s.name)
-  );
-
   function toggleSource(name) {
-    setSources((prev) =>
-      prev.map((s) => (s.name === name ? { ...s, checked: !s.checked } : s))
-    );
+    setSources((prev) => {
+      // From "All", picking a source narrows to just that source.
+      if (prev.every((s) => s.checked)) {
+        return prev.map((s) => ({ ...s, checked: s.name === name }));
+      }
+      const next = prev.map((s) =>
+        s.name === name ? { ...s, checked: !s.checked } : s
+      );
+      // Clearing the last source goes back to "All" rather than to nothing.
+      return next.some((s) => s.checked)
+        ? next
+        : prev.map((s) => ({ ...s, checked: true }));
+    });
+  }
+
+  function selectAllSources() {
+    setSources((prev) => prev.map((s) => ({ ...s, checked: true })));
   }
 
   // ---- Refresh: trigger ingest + poll ------------------------------------
@@ -63,28 +90,39 @@ export default function Page() {
 
   async function refresh() {
     setRefreshing(true);
-    setJobStatus("triggering scraper…");
+    setJobStatus("Starting…");
     setError("");
+    clearTimeout(statusTimer.current);
     try {
       const { jobId } = await apiPost("/ingest/trigger");
-      setJobStatus("scraper running…");
+      // The ingest rebuilds every cluster, so the old selection is void.
+      setSelectedId(null);
+      setJobStatus("Collecting articles…");
       stopPolling();
+      const startedAt = Date.now();
       pollTimer.current = setInterval(async () => {
+        if (Date.now() - startedAt > POLL_TIMEOUT_MS) {
+          stopPolling();
+          setJobStatus("");
+          setRefreshing(false);
+          setError(
+            "The refresh is taking longer than expected. It may still finish; reload the page in a few minutes."
+          );
+          return;
+        }
         try {
           const st = await apiGet(`/ingest/status/${jobId}`);
           if (st.status === "done") {
             stopPolling();
-            setJobStatus("done ✓");
+            setJobStatus("Updated");
             setRefreshing(false);
             await loadTimeline();
-            setTimeout(() => setJobStatus(""), 2500);
+            statusTimer.current = setTimeout(() => setJobStatus(""), 2500);
           } else if (st.status === "error") {
             stopPolling();
             setJobStatus("");
             setRefreshing(false);
             setError(st.error || "scraper failed");
-          } else {
-            setJobStatus(`scraper ${st.status}…`);
           }
         } catch (e) {
           stopPolling();
@@ -92,7 +130,7 @@ export default function Page() {
           setRefreshing(false);
           setError(e.message);
         }
-      }, 2000);
+      }, POLL_INTERVAL_MS);
     } catch (e) {
       setRefreshing(false);
       setJobStatus("");
@@ -100,91 +138,105 @@ export default function Page() {
     }
   }
 
-  useEffect(() => () => stopPolling(), []);
+  useEffect(
+    () => () => {
+      stopPolling();
+      clearTimeout(statusTimer.current);
+    },
+    []
+  );
 
   const totalArticles = timeline.reduce((sum, c) => sum + (c.count || 0), 0);
+  const latest = timeline.reduce(
+    (max, c) => (c.end && (!max || c.end > max) ? c.end : max),
+    null
+  );
+  // After a failed load there is nothing to count; "0" would read as a fact.
+  const unknown = Boolean(error) && timeline.length === 0;
+  const stats = [
+    { label: "Topics", value: unknown ? "—" : timeline.length },
+    { label: "Articles", value: unknown ? "—" : totalArticles },
+    { label: "Sources", value: unknown ? "—" : sources.length },
+    { label: "Latest article", value: formatRelative(latest) || "—" },
+  ];
+
+  const panel = (onClose) => (
+    <ClusterPanel
+      clusterId={selectedId}
+      cluster={clusterState.cluster}
+      loading={clusterState.loading}
+      error={clusterState.error}
+      onRetry={clusterState.retry}
+      sources={sources}
+      onToggleSource={toggleSource}
+      onSelectAllSources={selectAllSources}
+      onClose={onClose}
+    />
+  );
 
   return (
-    <main className="mx-auto max-w-7xl px-4 py-8">
-      <header className="mb-6 flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold tracking-tight text-white">
-            News{" "}
-            <span className="bg-gradient-to-r from-pulse-accent to-pulse-accent2 bg-clip-text text-transparent">
-              Pulse
-            </span>
-          </h1>
-          <p className="mt-1 text-sm text-gray-400">
-            Topic clusters across the active sources, refreshed on demand.
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          {jobStatus && (
-            <span className="text-xs text-gray-400">{jobStatus}</span>
-          )}
-          <button
-            onClick={refresh}
-            disabled={refreshing}
-            className="inline-flex items-center gap-2 rounded-lg bg-pulse-accent px-4 py-2 text-sm font-semibold text-[#0b1020] transition hover:bg-sky-300 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {refreshing && (
-              <span className="h-3 w-3 animate-spin rounded-full border-2 border-[#0b1020]/40 border-t-[#0b1020]" />
-            )}
-            {refreshing ? "Working…" : "Refresh data"}
-          </button>
-        </div>
-      </header>
+    <>
+      <a
+        href="#topics-heading"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-lg focus:bg-accent focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-on-accent"
+      >
+        Skip to topics
+      </a>
 
-      {error && (
-        <div className="mb-4 rounded-lg border border-red-500/30 bg-red-500/10 px-4 py-3 text-sm text-red-300">
-          {error}
-        </div>
-      )}
+      <AppHeader
+        refreshing={refreshing}
+        jobStatus={jobStatus}
+        onRefresh={refresh}
+      />
 
-      <div className="mb-4 flex flex-wrap items-center gap-2 text-xs text-gray-400">
-        <span className="uppercase tracking-wide">Sources:</span>
-        {sources.length === 0 && <span className="text-gray-500">(none yet)</span>}
-        {sources.map((s) => (
-          <label
-            key={s.name}
-            className="inline-flex cursor-pointer items-center gap-1.5 rounded-full border border-white/10 bg-pulse-panel/60 px-3 py-1"
-          >
-            <input
-              type="checkbox"
-              checked={s.checked}
-              onChange={() => toggleSource(s.name)}
-              className="accent-pulse-accent"
-            />
-            <span>{s.name}</span>
-          </label>
-        ))}
-      </div>
+      <main className="mx-auto max-w-screen-2xl px-4 py-5 sm:px-6 sm:py-6 lg:px-8 lg:py-8">
+        {error && (
+          <ErrorNotice
+            message={error}
+            onRetry={refreshing ? undefined : loadTimeline}
+            onDismiss={() => setError("")}
+            className="mb-4"
+          />
+        )}
 
-      <div className="mb-2 flex items-center justify-between text-xs text-gray-500">
-        <span>
-          {loading
-            ? "Loading…"
-            : `${timeline.length} clusters · ${totalArticles} articles`}
-        </span>
-      </div>
+        <StatTiles stats={stats} loading={loading && timeline.length === 0} />
 
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
-        <div className="lg:col-span-2">
-          <Timeline
+        <div className="mt-4 grid grid-cols-1 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_400px] xl:grid-cols-[minmax(0,1fr)_440px]">
+          <ClusterBars
             data={timeline}
+            loading={loading}
+            failed={Boolean(error)}
             selectedId={selectedId}
             onSelect={setSelectedId}
+            onRefresh={refresh}
+            onRetry={loadTimeline}
+            refreshing={refreshing}
           />
-        </div>
-        <div className="lg:col-span-1">
-          <ClusterPanel clusterId={selectedId} activeSources={activeSources} />
-        </div>
-      </div>
 
-      <footer className="mt-10 border-t border-white/10 pt-4 text-center text-xs text-gray-600">
-        News Pulse — keyword-overlap union-find clustering (threshold = 3 shared
-        significant words).
+          <aside
+            aria-label="Articles in the selected topic"
+            className="sticky top-24 hidden max-h-[calc(100dvh-7.5rem)] flex-col overflow-hidden rounded-2xl border border-border bg-surface/70 lg:flex"
+          >
+            {isDesktop && panel()}
+          </aside>
+        </div>
+      </main>
+
+      <footer className="mx-auto max-w-screen-2xl px-4 pb-8 sm:px-6 lg:px-8">
+        <p className="border-t border-border pt-4 text-center text-xs text-text-subtle">
+          News Pulse groups articles that share significant keywords into
+          topics.
+        </p>
       </footer>
-    </main>
+
+      {!isDesktop && (
+        <ClusterSheet
+          open={selectedId !== null}
+          onClose={() => setSelectedId(null)}
+        >
+          {panel(() => setSelectedId(null))}
+        </ClusterSheet>
+      )}
+    </>
   );
 }
