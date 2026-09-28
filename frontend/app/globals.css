@@ -2,31 +2,107 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Theme tokens, as RGB channels so Tailwind opacity modifiers work
+   (bg-surface/60). The theme is chosen by data-theme on <html>, set before
+   paint by the inline script in layout.js. Text tokens pass WCAG AA (4.5:1) on
+   bg, surface and surface-2 in both themes. */
 :root {
+  color-scheme: light;
+  --bg: 246 247 251;
+  --surface: 255 255 255;
+  --surface-2: 237 240 247;
+  --border: 214 219 231;
+  --text: 15 23 42;
+  --text-muted: 71 85 105;
+  --text-subtle: 84 97 118;
+  --accent: 3 105 161;
+  --accent-2: 109 40 217;
+  --on-accent: 255 255 255;
+  --danger: 185 28 28;
+  --glow: 3 105 161;
+  --glow-alpha: 0.08;
+}
+
+[data-theme="dark"] {
   color-scheme: dark;
+  --bg: 11 16 32;
+  --surface: 18 25 53;
+  --surface-2: 28 37 74;
+  --border: 48 58 99;
+  --text: 241 245 249;
+  --text-muted: 168 176 192;
+  --text-subtle: 148 157 178;
+  --accent: 56 189 248;
+  --accent-2: 167 139 250;
+  --on-accent: 11 16 32;
+  --danger: 252 165 165;
+  --glow: 27 37 80;
+  --glow-alpha: 1;
 }
 
-html,
+/* Without JavaScript there is no data-theme, so follow the system setting. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    color-scheme: dark;
+    --bg: 11 16 32;
+    --surface: 18 25 53;
+    --surface-2: 28 37 74;
+    --border: 48 58 99;
+    --text: 241 245 249;
+    --text-muted: 168 176 192;
+    --text-subtle: 148 157 178;
+    --accent: 56 189 248;
+    --accent-2: 167 139 250;
+    --on-accent: 11 16 32;
+    --danger: 252 165 165;
+    --glow: 27 37 80;
+    --glow-alpha: 1;
+  }
+}
+
 body {
-  height: 100%;
+  min-height: 100dvh;
+  background-color: rgb(var(--bg));
+  background-image: radial-gradient(
+    1200px 600px at 20% -10%,
+    rgb(var(--glow) / var(--glow-alpha)) 0%,
+    transparent 60%
+  );
+  background-repeat: no-repeat;
+  color: rgb(var(--text));
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
 }
 
-body {
-  background: radial-gradient(1200px 600px at 20% -10%, #1b2550 0%, transparent 60%),
-    #0b1020;
-  color: #e5e7eb;
-  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    Helvetica, Arial, sans-serif;
+:focus-visible {
+  outline: 2px solid rgb(var(--accent));
+  outline-offset: 2px;
 }
 
-/* Thin custom scrollbars for the cluster panel. */
+/* Thin scrollbars for the article list and the source chips. */
+.scroll-thin {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(var(--border)) transparent;
+}
 .scroll-thin::-webkit-scrollbar {
   width: 8px;
+  height: 8px;
 }
 .scroll-thin::-webkit-scrollbar-thumb {
-  background: #2a3563;
+  background: rgb(var(--border));
   border-radius: 4px;
 }
 .scroll-thin::-webkit-scrollbar-track {
   background: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  ::before,
+  ::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
