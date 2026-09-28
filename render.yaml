@@ -1,0 +1,23 @@
+# Render blueprint for the backend. The image bundles the Node API and the
+# Python scraper (spawned by POST /ingest/trigger), so there is one service.
+#
+# The Dockerfile copies backend/, scraper/ and db/, so the build context must be
+# the repo root and Root Directory must stay empty.
+services:
+  - type: web
+    name: news-pulse-backend
+    runtime: docker
+    plan: free
+    region: oregon
+    branch: main
+    dockerfilePath: ./backend/Dockerfile
+    dockerContext: .
+    healthCheckPath: /healthz
+    # Deploys are triggered by .github/workflows/deploy-render.yml (deploy hook).
+    # Leaving this on as well would start two deploys per push.
+    autoDeployTrigger: "off"
+    envVars:
+      - key: DATABASE_URL
+        sync: false # Neon pooled connection string; set in the dashboard
+      - key: PGSSLMODE
+        value: require

@@ -1,0 +1,14 @@
+# Build context is the repo root (see render.yaml); keep it to what the
+# backend image needs: backend/, scraper/ and db/.
+.git
+.github
+frontend
+**/node_modules
+**/__pycache__
+**/.venv
+**/venv
+*.md
+**/.env
+**/.env.*
+data
+**/*.db

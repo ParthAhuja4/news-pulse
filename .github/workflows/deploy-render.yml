@@ -1,0 +1,40 @@
+name: Deploy backend to Render
+
+# Triggers a Render deploy through the service's deploy hook, so deploys don't
+# depend on Render's own push detection. Requires the repository secret
+# RENDER_DEPLOY_HOOK_URL (Render -> service -> Settings -> Deploy Hook).
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - "scraper/**"
+      - "db/**"
+      - "render.yaml"
+      - ".dockerignore"
+      - ".github/workflows/deploy-render.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-render
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Trigger Render deploy
+        env:
+          RENDER_DEPLOY_HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
+        run: |
+          if [ -z "$RENDER_DEPLOY_HOOK_URL" ]; then
+            echo "::error::Secret RENDER_DEPLOY_HOOK_URL is not set. Add it under Settings -> Secrets and variables -> Actions."
+            exit 1
+          fi
+          # The hook URL already carries ?key=..., so the commit is appended with &ref=.
+          curl --fail --silent --show-error --max-time 60 \
+            -X POST "${RENDER_DEPLOY_HOOK_URL}&ref=${GITHUB_SHA}"
+          echo
+          echo "Render deploy requested for ${GITHUB_SHA}."
