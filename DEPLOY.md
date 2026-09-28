@@ -4,12 +4,11 @@ The agent cannot create cloud accounts or hold your credentials, so this file is
 the exact, copy-pasteable runbook to get a **live, cold-openable URL** yourself.
 Two deployment shapes are covered — pick one:
 
-- **Shape A (recommended): Render (backend+scraper) + Vercel (frontend).** Easiest;
-  the services are created manually on Render and Vercel (`vercel.json` drives the
-  frontend build). Note: the bundled `backend/render.yaml` is stale — see A.2.
-- **Shape B: all-Docker on any container host (Fly.io, Railway, Render Docker).**
-  Uses the provided `backend/Dockerfile`; good if you want one service that owns
-  the DB.
+- **Shape A (recommended): Render (backend+scraper) + Vercel (frontend).** The
+  backend runs on Render as a Docker web service built from `backend/Dockerfile`
+  (described by the root `render.yaml`); `vercel.json` drives the frontend build.
+- **Shape B: all-Docker on any other container host (Fly.io, Railway).** Uses
+  the same `backend/Dockerfile`.
 
 Both shapes use a **Neon serverless Postgres** database — provisioned once,
 shared by the backend and scraper. No local SQLite, no persistent-disk
@@ -76,23 +75,55 @@ git push -u origin main
 
 ### A.2 Backend on Render (web service)
 
-1. Render dashboard → **New +** → **Web Service** → connect your repo.
-2. **Root Directory:** `backend` · **Runtime:** Node · **Plan:** Free.
-3. **Build Command:** `npm install` · **Start Command:** `npm start`.
+The backend is a **Docker** web service. The image bundles Node, Python and the
+scraper, so `/ingest/trigger` can spawn the scraper in the same container. The
+root `render.yaml` records these settings.
+
+1. Render dashboard → **New +** → **Web Service** → connect your repo (or
+   **New +** → **Blueprint** to create it from `render.yaml`).
+2. **Runtime:** Docker · **Branch:** `main` · **Plan:** Free.
+3. Under **Build & Deploy**:
+   - **Root Directory:** leave empty. The Dockerfile copies `backend/`,
+     `scraper/` and `db/`, so the build context must be the repo root.
+   - **Dockerfile Path:** `./backend/Dockerfile`
+   - **Docker Build Context Directory:** `.`
+   - **Build Filters:** none
+   - **Auto-Deploy:** Off (deploys are triggered by GitHub Actions, see A.2.1)
+   - **Health Check Path:** `/healthz`
 4. On the service → **Environment**, set:
    - `DATABASE_URL` = your Neon **pooled** connection string (from §1 step 3)
-   - `PORT` = `10000` (Render routes external 443 → your PORT)
-   - `PYTHON_BIN` = `python3` (Render's Node image has Python; if the
-     `/ingest/trigger` spawn fails, SSH in and `which python3` to confirm).
    - `PGSSLMODE` = `require` (Neon requires TLS; this is the default if omitted)
    - `PG_POOL_MAX` = `10` (optional; cap on node-postgres pool size)
+
+   `PORT` and `PYTHON_BIN` are set in the Dockerfile and don't need to be added.
 5. Deploy. When green, open `https://<backend>.onrender.com/healthz` → you should
    see `{"ok":true}`.
 
 > **No persistent disk needed.** With Neon the database lives on Neon's
-> infrastructure, not on Render's filesystem. This eliminates the old SQLite
-> gotchas (ephemeral disk, cross-service file sharing). The Render service
-> simply connects via `DATABASE_URL`.
+> infrastructure, not on Render's filesystem. The Render service simply connects
+> via `DATABASE_URL`.
+
+#### A.2.1 Automatic deploys (GitHub Actions → Render deploy hook)
+
+`.github/workflows/deploy-render.yml` asks Render to deploy on every push to
+`main` that touches `backend/`, `scraper/`, `db/`, `render.yaml` or
+`.dockerignore`. Frontend-only pushes don't redeploy the backend. One-time setup:
+
+1. Render → service → **Settings** → **Deploy Hook** → copy the URL. Treat it as
+   a secret: anyone who has it can trigger a deploy.
+2. GitHub → repo → **Settings** → **Secrets and variables** → **Actions** →
+   **New repository secret**: name `RENDER_DEPLOY_HOOK_URL`, value = the hook URL.
+3. Push to `main`. The run appears under the repo's **Actions** tab, and the
+   deploy under **Events** on the Render service.
+
+To deploy without a push, open **Actions** → **Deploy backend to Render** →
+**Run workflow**.
+
+If you'd rather use Render's built-in trigger, set **Auto-Deploy** to
+**On Commit** and delete the workflow; keeping both starts two deploys per push.
+If pushes then start nothing, check that Render's GitHub App has access to this
+repository (GitHub → **Settings** → **Applications** → **Render** → **Repository
+access**) and that the Root Directory and Build Filters are empty.
 
 ### A.3 Frontend on Vercel
 
@@ -131,16 +162,15 @@ Then open the Vercel URL → click **Refresh data** → cluster bars appear.
 
 ---
 
-## Shape B — All-Docker (single service owns the DB)
+## Shape B — All-Docker on another host
 
-Use this if you'd rather run the backend (which can spawn the scraper) as one
-container. The container connects to the same remote Neon database — no local DB
-file needed.
+Use this to run the same container somewhere other than Render. The container
+connects to the same remote Neon database — no local DB file needed.
 
 1. Push to GitHub (A.1).
 2. Provision your Neon database (§1).
-3. On Render/Railway/Fly.io create a **Web Service from a Dockerfile** with root
-   `backend/Dockerfile`. The image bundles Node + Python + scraper deps.
+3. On Railway/Fly.io create a service from `backend/Dockerfile` with the **repo
+   root as build context**. The image bundles Node + Python + scraper deps.
 4. Set env:
    - `PORT` = `4000`
    - `DATABASE_URL` = your Neon pooled connection string
@@ -166,9 +196,9 @@ curl http://localhost:4000/healthz
 
 | Service  | Var                   | Example value                                                 |
 | -------- | --------------------- | ------------------------------------------------------------- |
-| backend  | `PORT`                | `10000` (Render) / `4000` (Docker)                            |
+| backend  | `PORT`                | `4000` (set in the Dockerfile)                                |
 | backend  | `DATABASE_URL`        | `postgresql://neondb_owner:xxx@ep-xyz.pooler.neon.tech/...`   |
-| backend  | `PYTHON_BIN`          | `python3` (optional; auto-detected if omitted)                |
+| backend  | `PYTHON_BIN`          | `/scraper/.venv/bin/python` (set in the Dockerfile)           |
 | backend  | `PGSSLMODE`           | `require` (default; set `disable` for local non-TLS Postgres) |
 | backend  | `PG_POOL_MAX`         | `10` (optional; node-postgres pool cap)                       |
 | scraper  | `DATABASE_URL`        | **must be the same Neon connection string as backend**        |
